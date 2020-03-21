@@ -1,6 +1,6 @@
 library(shiny);library(dplyr);library(tidyr);library(DT); library(ggplot2); library(shinycssloaders)
 
-df <- read.csv("matchData.csv", header=T, stringsAsFactors = F)
+df <- read.csv("matchData_2020.csv", header=T, stringsAsFactors = F)
 states <- levels(factor(df$State))
 years <- levels(factor(df$Year))
 specialties <- levels(factor(df$simpleSpecialty))
@@ -8,11 +8,13 @@ specialties <- levels(factor(df$simpleSpecialty))
 ui <- navbarPage("Match Data",
   header = 
     div(
-      tags$head(includeHTML("google-analytics.js")), 
+      tags$head(
+        includeHTML("google-analytics.js"),
+        includeCSS("closableFooterCSS.css")
+        ),
+      includeHTML("closableFooterHTML.html"),
       style="margin-left:2%; margin-right:2%;",
       titlePanel("Fellowship Match Data"),
-      p("Source:", a(href="https://mk0nrmpcikgb8jxyd19h.kinstacdn.com/wp-content/uploads/2019/02/SMS_Program_Results_2015_2019.pdf", 
-                     "NRMP 2019-2015 Main Match Results")),
       div(style="border:solid; background-color:#f5f7fa; border-radius: 25px",
           column(4,selectizeInput(inputId = "specialty",
                       label = "Choose specialty",
@@ -25,7 +27,7 @@ ui <- navbarPage("Match Data",
           column(4,selectInput(inputId = "year",
                       label = "Choose year",
                       choices = c("All years",years),
-                      selected = "2019")),
+                      selected = "2020")),
       fluidRow(
         column(6, align = "center", checkboxInput("SOAP", label = "Only show programs with SOAP positions?", value = FALSE)),
         column(6, align = "center", downloadButton('downloadData', 'Download filtered data'))
@@ -33,6 +35,13 @@ ui <- navbarPage("Match Data",
       ),
       br()
   ),
+  footer = div(column(12,
+      br(),
+      p("Source:", a(href="https://mk0nrmpcikgb8jxyd19h.kinstacdn.com/wp-content/uploads/2019/02/SMS_Program_Results_2015_2019.pdf", 
+                     "NRMP 2019-2015 Main Match Results"), align = "right"),
+      p("Source:", a(href="https://mk0nrmp3oyqui6wqfm.kinstacdn.com/wp-content/uploads/2020/02/Program-Results-SMS-2016-2020.pdf", 
+                     "NRMP 2020-2016 Main Match Results"), align = "right")
+  )),
   tabPanel("Data Browser",
     div(DT::dataTableOutput("mytable"))
     ),
@@ -51,7 +60,8 @@ ui <- navbarPage("Match Data",
         column(12, withSpinner(plotOutput("ratePlot")) )
       ),
       fluidRow(br())
-    )
+    ),
+    includeHTML("closableFooterJS.html")
   )
 )
 
