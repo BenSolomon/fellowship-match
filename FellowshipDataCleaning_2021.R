@@ -1,0 +1,217 @@
+library(pdftools); library(zoo); library(tidyverse)
+
+doc <- pdf_text("Program-Results-2017-2021.pdf")
+doc <- unlist(strsplit(doc, split = "\n"))
+doc <- tibble(text = as.vector(doc))
+
+states <- data.frame("stateFull" = c(toupper(state.name), "DISTRICT OF COLUMBIA"),
+                     "State" = c(state.abb, "DC"),
+                     stringsAsFactors = F)
+
+# old.data <- read.csv("Program-Results-2013-2017v2.csv", stringsAsFactors = F)
+# old.data <- old.data %>%
+#   filter(Year == 2013) %>%
+#   mutate(Stat = paste(Year, Stat, sep = "-")) %>%
+#   select(Code, Stat, value) %>%
+#   # group_by(Code) %>%
+#   # summarise(summary = length(Stat)) %>%
+#   # arrange(desc(summary))
+#   spread(Stat, value)
+
+
+df <- doc %>%
+  #Remove "\r"
+  rowwise() %>%
+  mutate(text = unlist(strsplit(text, split = "\r"))) %>%
+  ungroup() %>%
+  #Filter out non-data lines
+  filter(!grepl("NRMP Program Results", text)) %>%
+  filter(!grepl("Did not fill all available positions", text)) %>%
+  filter(!grepl("Program ", text)) %>%
+  filter(!grepl("Continued", text)) %>%
+  #Identify state groups and assign as variable to each program
+  mutate(upper = toupper(text)) %>%
+  # mutate(isState = (text == upper) & grepl("^[a-zA-Z]+$", text)) %>%
+  mutate(isState = (text %in% states$stateFull) | ((text == upper) & grepl("^[a-zA-Z]+$", text))) %>%
+  rowwise() %>%
+  mutate(stateFull = ifelse(isState == TRUE, text, NA)) %>%
+  mutate(extraName = !grepl("\\d", text)) %>%
+  ungroup() %>%
+  slice(-1) %>%
+  mutate(stateFull = ifelse(grepl("-DC", text), "DISTRICT OF COLUMBIA", stateFull)) %>%
+  mutate(stateFull = na.locf(stateFull)) %>%
+  left_join(states, by = "stateFull") %>%
+  filter(!isState) %>%
+  select(-isState, -upper, -stateFull) %>%
+  #Identify program names and assign as variable to each program
+  rowwise() %>%
+  mutate(first = unlist(strsplit(as.character(text), "[ \t]{2,} | --"))[1]) %>%
+  ungroup() %>%
+  mutate(isProgram = text == first) %>%
+  mutate(Program = ifelse(isProgram == TRUE, first, NA)) %>%
+  mutate(Program = na.locf(Program)) %>%
+  filter(!isProgram) %>%
+  #Identify cities and assign as variable to each program
+  mutate(isCity = grepl("Quota", text)) %>%
+  mutate(City = ifelse(isCity == TRUE, first, NA)) %>%
+  mutate(City = na.locf(City)) %>%
+  filter(!isCity) %>%
+  filter(!grepl("prohibited", text)) %>%
+  #Find programs whose name have line breaks and rejoin them
+  mutate(incomp = lead(extraName)) %>%
+  mutate(incompExtra = lead(text)) %>%
+  mutate(Specialty = ifelse(incomp == TRUE, paste(first, incompExtra, sep=" "), first)) %>%
+  filter(!extraName) %>%
+  select(-incomp, -incompExtra, -extraName, -isProgram, -isCity) %>%
+  rowwise() %>%
+  #Find program code and remove from specialty name
+  mutate(Code = ifelse(any(grepl("[0-9][F|S][0-9]$", unlist(strsplit(text, "[ \t]"))) == TRUE),
+    unlist(strsplit(text, "[ \t]"))[grepl("[0-9][F|S][0-9]$", unlist(strsplit(text, "[ \t]")))],
+    NA))%>%
+  mutate(Specialty = trimws(paste(unlist(strsplit(Specialty, Code)), collapse = "")))%>%
+  separate(text, sep = "([\\S])+([0-9])([A-z])([0-9]) ", into = c("P", "data")) %>%
+  mutate(data = gsub("\\*", "", data)) %>%
+  mutate(data = gsub("--", "0", data)) %>%
+  filter(!is.na(data)) %>%
+  mutate(data = strsplit(data, "\\s")) %>%
+  mutate(data = map(data, function(x) paste(x[as.logical(nchar(x) )], collapse = "-"))) %>%
+  # rowwise() %>%
+  # mutate(data = list(unlist(strsplit(data, "\\s*"))))
+  # mutate(data = paste(unlist(strsplit(data, "\\s*")),collapse="-"))%>%
+  mutate(State = ifelse(is.na(State), "CANADA", State)) %>%
+  separate(data, sep = "-", into = c("Quota.2021", "Matched.2021",
+                                     "Quota.2020", "Matched.2020",
+                                     "Quota.2019", "Matched.2019",
+                                     "Quota.2018", "Matched.2018",
+                                     "Quota.2017", "Matched.2017")) %>%
+  #SOAP calculation
+  filter(!is.na(Code)) %>%
+  mutate_if(function(x) all(grepl("^[0-9]*$", x)), .funs = list(as.numeric)) %>%
+  # rowwise() %>%
+  mutate(SOAP.2021 = Quota.2021 - Matched.2021,
+         SOAP.2020 = Quota.2020 - Matched.2020,
+         SOAP.2019 = Quota.2019 - Matched.2019,
+         SOAP.2018 = Quota.2018 - Matched.2018,
+         SOAP.2017 = Quota.2017 - Matched.2017) %>%
+  # #Add 2013
+  # left_join(old.data, by = "Code") %>%
+  #Reshape
+  select(-P, -first) %>%
+  gather(Stat, value, -State, -Program, -Code, -City, -Specialty) %>%
+  separate(Stat, sep = "\\.", into = c("Stat", "Year"))
+
+df[(is.na(df$State) & (df$City == "Washington")),1] <- "DC"
+
+specialty.search <- list("Allergy and Immunology" = c("Immunology", "A & I"),
+                         "Transplant Surgery" = c("Trans Surg", "Transplant", "Kidney/Liver"),
+                         "Academic General Pediatrics" = c("Academic General Pediatrics"), 
+                         "Adolescent Medicine" = c("Adolescent Medicine"), 
+                         "Brain Injury Medicine" = c("Brain Injury Medicine"),
+                         "Breast Imaging" = c("Breast Imaging", "Women's"), 
+                         "Cardiology" = c("Cardio Dis", "Cardiology", "Card Dis", "Cardio-"), 
+                         "Cardiovascular Disease" = c("Cardiovascular Dis", "Cardiovascular DIs"),
+                         "Cardiothoracic Surgery" = c("Cardiothoracic"), 
+                         "Child and Adolescent Psychiatry" = c("Child and Adolescent", "C & A"), 
+                         "Child Abuse" = c("Child Abuse"),
+                         "Clinical Ultrasound" = c("Ultrasound"), 
+                         "Colon and Rectal Surgery" = c("Colon"), 
+                         "Consultation-Liaison Psychiatry" = c("Consultation"), 
+                         "Cardiac Electrophysiology" = c("Electrophysiology"), 
+                         "Developmental-Behavioral Pediatrics" = c("Developmental", "D-B"),
+                         "Endocrinology" = c("Endocrinology"), 
+                         "Pelvic Medicine and Reconstructive Surgery" = c("Pelvic", "pelvic"), 
+                         "Gastroenterology" = c("Gastro"), 
+                         "Geriatric Medicine" = c("Geriatric"), 
+                         "Gynecologic Oncology" = c("Gynecologic Oncology", "Gyn Onc"),
+                         "Hand Surgery" = c("Hand Surg"), 
+                         "Headache Medicine" = c("Headache"), 
+                         "Hematology and Oncology" = c("Heme-Onc", "Heme/Onc", "Hematology", "Heme/Med", "Medical Oncology"), 
+                         "Hospice and Palliative Medicine" = c("Hospice"), 
+                         "Infectious Disease" = c("Infect Dis", "Infectious"), 
+                         "Maternal-Fetal Medicine" = c("Maternal-Fetal"), 
+                         "Medical Genetics" = c("Medical Genetics"), 
+                         "Medical Toxicology" = c("Medical Toxicology"), 
+                         "Neonatal-Perinatal Medicine" = c("Neonatal"),
+                         "Nephrology" = c("Neph"), 
+                         "Neuroradiology" = c("Neuroradiology"), 
+                         "Pain Medicine" = c("Pain Med"), 
+                         "Maternal-Fetal Medicine" = c("Maternal-Fetal"), 
+                         "Medical Genetics" = c("Medical Genetics"), 
+                         "Medical Toxicology" = c("Medical Toxicology"), 
+                         "Neonatal-Perinatal Medicine" = c("Neonatal"),
+                         "Psychosomatic Medicine" = c("Psychosomatic"),
+                         "Pulmonary and Critical Care Medicine" = c("Pulmonary", "Pulm"),
+                         "Reproductive Endocrinology" = c("Repro Endo", "Reproductive"),
+                         "Rheumatology" = c("Rheumatology"),
+                         "Sleep Medicine" = c("Sleep"),
+                         "Spinal Cord Injury Medicine" = c("Spinal Cord"),
+                         "Sports Medicine" = c("Sports"),
+                         "Surgical Critical Care" = c("Surg Crit", "Surgical Crit"),
+                         "Surgical Oncology" = c("Surg Onc", "Surgical Onc"),
+                         "Thoracic Surgery" = c("Thoracic"),
+                         "Vascular Surgery" = c("Vasc Surg", "Vascular Surg"),
+                         "Vascular Neurology" = c("Vascular Neur"),
+                         "Minimally Invasive Gynecological Surgery" = c("Invasive Gyn"),
+                         "Adult Congenital Heart Disease" = c("Adult Congenital"),
+                         "Interventional Pulmonology" = c("Interventional Pulm"),
+                         "Interventinal Radiology" = c("Interventional Rad")
+)
+                         
+specialty.search.peds <- list("Pediatric Surgery" = c("Ped Surg", "Pediatric Surgery"),
+                         "Pediatric Anesthesiology" = c("Pediatric Anesthesiology"), 
+                         "Pediatric Critical Care" = c("Pediatric Critical"), 
+                         "Pediatric Emergency Medicine" = c("Pediatric Emergency", "Ped Emergency", "Peds Emergency"), 
+                         "Pediatric Hospital Medicine" = c("Pediatric Hospital Medicine"),
+                         "Pediatric Pulmonology" = c("Pediatric Pulmonology"),
+                         "Pediatric Infectious Disease" = c("Pediatric Infectious"),
+                         "Pediatric Gastroenterology" = c("Pediatric Gastro", "Pediatric GI"),
+                         "Pediatric Endocrinology" = c("Pediatric Endo"),
+                         "Pediatric Cardiology" = c("Pediatric Card"),
+                         "Pediatric Hematology and Oncology" = c("Pediatric Hem"),
+                         "Pediatric Nephrology" = c("Pediatric Neph"),
+                         "Pediatric Pulmonology" = c("Pediatric Pulm"),
+                         "Pediatric Rehabilitation Medicine" = c("Pediatric Rehab"),
+                         "Pediatric Rheumatology" = c("Pediatric Rheum"),
+                         "Pediatric Sports Medicine" = c("Pediatric Sports"),
+                         "Pediatric and Adolescent Gynecology" = c("Pediatric Gyn"))
+
+
+all.peds <- paste(unlist(specialty.search.peds),collapse="|")
+
+specialties <- names(specialty.search)
+
+
+df.peds <- df %>%
+  filter(grepl(all.peds, Specialty, ignore.case = T))
+df.adult <- df %>%
+  filter(!grepl(all.peds, Specialty, ignore.case = T))
+
+
+specialty.simple <- function(input, search) {
+  matched.ls <- lapply(search, 
+                       function(x) input[grepl(paste(x, collapse="|"), input$Specialty, ignore.case = T), ])
+  names.ls <- lapply(seq_along(matched.ls), 
+                     function(x) names(matched.ls)[[x]])
+  df.ls <- lapply(seq_along(matched.ls), 
+                  function(x){
+    data.frame(matched.ls[[x]], "simpleSpecialty" = rep(names.ls[[x]], nrow(matched.ls[[x]])), stringsAsFactors = F)
+  })
+  bind_rows(df.ls)
+}
+
+df.peds <- specialty.simple(df.peds, specialty.search.peds)
+df.adult <- specialty.simple(df.adult, specialty.search)
+
+df <- rbind(df.adult, df.peds) %>%
+  group_by(State, Program, Specialty, Code, Stat, Year, simpleSpecialty) %>%
+  summarise(value = sum(value), City = City[1]) %>%
+  ungroup() %>%
+  mutate(Year = as.integer(Year))
+  # mutate(ID = paste0(substr(Program,1,2),substr(City,1,2),substr(simpleSpecialty,1,2),Code)) %>%
+  # filter(State != "CANADA")
+
+old.data <- read.csv("matchData_2020.csv", stringsAsFactors = F)
+compiled.df <- old.data %>% bind_rows(df) %>% distinct()
+
+
+write.csv(compiled.df, "matchData_2021.csv", row.names = F)
